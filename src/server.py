@@ -189,7 +189,7 @@ async def add_memory_tool(
     source: str,
     memory_type: str,
     valid_at: str,
-    tags: list[str] = [],
+    tags: list[str] | None = None,
 ) -> str:
     """Store a single fact as a memory. Use PROACTIVELY when the user shares info worth remembering across sessions.
 

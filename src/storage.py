@@ -1,8 +1,10 @@
+import asyncio
 import contextlib
 import hashlib
 import json
 import logging
 import os
+import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 
@@ -27,19 +29,36 @@ _VEC_SQL = f"""CREATE VIRTUAL TABLE memory_embeddings USING vec0(
 )"""
 
 _db: aiosqlite.Connection | None = None
+_read_pool: list[aiosqlite.Connection] = []
+_READ_POOL_SIZE = 3
+
+
+async def _configure_connection(db: aiosqlite.Connection, readonly: bool = False):
+    """Apply performance PRAGMAs and load extensions."""
+    db.row_factory = aiosqlite.Row
+    await db.enable_load_extension(True)
+    await db.load_extension(sqlite_vec.loadable_path())
+    await db.enable_load_extension(False)
+    if not readonly:
+        await db.execute("PRAGMA journal_mode=WAL")
+    await db.execute("PRAGMA mmap_size=268435456")  # 256MB mmap
+    await db.execute("PRAGMA cache_size=-65536")  # 64MB page cache
+    await db.execute("PRAGMA temp_store=MEMORY")
 
 
 async def init_db() -> aiosqlite.Connection:
     global _db
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     db = await aiosqlite.connect(DB_PATH)
-    db.row_factory = aiosqlite.Row
-    await db.enable_load_extension(True)
-    await db.load_extension(sqlite_vec.loadable_path())
-    await db.enable_load_extension(False)
-    await db.execute("PRAGMA journal_mode=WAL")
+    await _configure_connection(db)
     await _init_tables(db)
     _db = db
+    # Read-only pool for parallel search queries
+    for _ in range(_READ_POOL_SIZE):
+        rconn = await aiosqlite.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+        await _configure_connection(rconn, readonly=True)
+        _read_pool.append(rconn)
+    logger.info("Database initialized at %s (read pool=%d)", DB_PATH, _READ_POOL_SIZE)
     return db
 
 
@@ -51,6 +70,9 @@ async def get_db() -> aiosqlite.Connection:
 
 async def close_db():
     global _db
+    for rconn in _read_pool:
+        await rconn.close()
+    _read_pool.clear()
     if _db:
         await _db.close()
         _db = None
@@ -111,7 +133,7 @@ async def _init_tables(db: aiosqlite.Connection):
         CREATE INDEX IF NOT EXISTS idx_mq_mid ON memory_questions(memory_id);
     """)
     await db.commit()
-    logger.info("Database initialized at %s", DB_PATH)
+    logger.info("Schema initialized at %s", DB_PATH)
 
 
 def _hash(content: str) -> str:
@@ -197,6 +219,39 @@ def _rrf_score(ranks: dict[int, list[int]], k: int = 60) -> list[tuple[int, floa
     return sorted(scores.items(), key=lambda x: x[1], reverse=True)
 
 
+async def _vec_search(conn: aiosqlite.Connection, embedding: bytes, limit: int) -> list:
+    return await conn.execute_fetchall(
+        "SELECT memory_id, distance FROM memory_embeddings WHERE embedding MATCH ? ORDER BY distance LIMIT ?",
+        (embedding, limit),
+    )
+
+
+async def _hyde_search(conn: aiosqlite.Connection, embedding: bytes, limit: int) -> list[tuple[int, float]]:
+    hyde_raw = await conn.execute_fetchall(
+        "SELECT rowid, distance FROM memory_question_embeddings WHERE embedding MATCH ? ORDER BY distance LIMIT ?",
+        (embedding, limit),
+    )
+    if not hyde_raw:
+        return []
+    q_ids = [r[0] for r in hyde_raw]
+    ph = ",".join("?" * len(q_ids))
+    q_map = {
+        r[0]: r[1]
+        for r in await conn.execute_fetchall(f"SELECT id, memory_id FROM memory_questions WHERE id IN ({ph})", q_ids)
+    }
+    return [(q_map[r[0]], r[1]) for r in hyde_raw if r[0] in q_map]
+
+
+async def _bm25_search(conn: aiosqlite.Connection, query_text: str, limit: int) -> list:
+    escaped = _escape_fts(query_text)
+    if not escaped:
+        return []
+    return await conn.execute_fetchall(
+        "SELECT rowid, rank FROM memory_fts WHERE memory_fts MATCH ? ORDER BY rank LIMIT ?",
+        (escaped, limit),
+    )
+
+
 async def search_memories(
     db: aiosqlite.Connection,
     query_embedding: bytes,
@@ -208,33 +263,20 @@ async def search_memories(
     limit = min(limit, MAX_LIMIT)
     fetch_limit = max(limit * 5, 20)
 
-    vec_results = await db.execute_fetchall(
-        "SELECT memory_id, distance FROM memory_embeddings WHERE embedding MATCH ? ORDER BY distance LIMIT ?",
-        (query_embedding, fetch_limit),
-    )
-    hyde_raw = await db.execute_fetchall(
-        "SELECT rowid, distance FROM memory_question_embeddings WHERE embedding MATCH ? ORDER BY distance LIMIT ?",
-        (query_embedding, fetch_limit),
-    )
-    hyde_results = []
-    if hyde_raw:
-        q_ids = [r[0] for r in hyde_raw]
-        ph = ",".join("?" * len(q_ids))
-        q_map = {
-            r[0]: r[1]
-            for r in await db.execute_fetchall(f"SELECT id, memory_id FROM memory_questions WHERE id IN ({ph})", q_ids)
-        }
-        hyde_results = [(q_map[r[0]], r[1]) for r in hyde_raw if r[0] in q_map]
+    t0 = time.perf_counter()
 
-    escaped = _escape_fts(query_text)
-    bm25_results = (
-        await db.execute_fetchall(
-            "SELECT rowid, rank FROM memory_fts WHERE memory_fts MATCH ? ORDER BY rank LIMIT ?",
-            (escaped, fetch_limit),
+    # Run all 3 retrieval queries in parallel on separate read connections
+    if len(_read_pool) >= 3:
+        vec_results, hyde_results, bm25_results = await asyncio.gather(
+            _vec_search(_read_pool[0], query_embedding, fetch_limit),
+            _hyde_search(_read_pool[1], query_embedding, fetch_limit),
+            _bm25_search(_read_pool[2], query_text, fetch_limit),
         )
-        if escaped
-        else []
-    )
+    else:
+        vec_results = await _vec_search(db, query_embedding, fetch_limit)
+        hyde_results = await _hyde_search(db, query_embedding, fetch_limit)
+        bm25_results = await _bm25_search(db, query_text, fetch_limit)
+    t1 = time.perf_counter()
 
     ranks: dict[int, list[int]] = {}
     for i, (mid, _) in enumerate(vec_results):
@@ -262,10 +304,18 @@ async def search_memories(
     row_map = {row["id"]: row for row in rows}
     candidates = [(mid, s, row_map[mid]) for mid, s in rrf_ranked if mid in row_map]
 
+    t2 = time.perf_counter()
     if rerank_fn and len(candidates) > limit:
         scores = await rerank_fn(query_text, [row["content"] for _, _, row in candidates])
         scored = sorted(zip(candidates, scores, strict=True), key=lambda x: x[1], reverse=True)
         candidates = [(mid, score, row) for (mid, _, row), score in scored]
+    t3 = time.perf_counter()
+
+    logger.info(
+        "SEARCH: retrieve=%.3fs(vec=%d hyde=%d bm25=%d) fetch=%.3fs rerank=%.3fs(%d) total=%.3fs",
+        t1 - t0, len(vec_results), len(hyde_results), len(bm25_results),
+        t2 - t1, t3 - t2, len(candidates), t3 - t0,
+    )
 
     return [{**_row_to_dict(row), "score": round(s, 4)} for _, s, row in candidates[:limit]]
 

@@ -22,10 +22,9 @@ _QUESTION_MODEL = os.environ.get("ENGRAM_QUESTION_MODEL", "gpt-5.4-nano")
 _DATA_DIR = "/data" if os.path.isdir("/data") else "./data"
 
 _RERANK_DIR = os.path.join(_DATA_DIR, "model", "ms-marco-MiniLM-L-6-v2")
-_RERANK_MODEL_URL = (
-    "https://huggingface.co/cross-encoder/ms-marco-MiniLM-L-6-v2/resolve/main/onnx/model_quint8_avx2.onnx"
-)
-_RERANK_TOKENIZER_URL = "https://huggingface.co/cross-encoder/ms-marco-MiniLM-L-6-v2/resolve/main/tokenizer.json"
+_RERANK_HF = "https://huggingface.co/cross-encoder/ms-marco-MiniLM-L-6-v2/resolve/main/onnx"
+_RERANK_TOKENIZER_URL = f"{_RERANK_HF}/tokenizer.json"
+_RERANK_MAX_LENGTH = 128
 
 _openai: AsyncOpenAI | None = None
 _rerank_session: ort.InferenceSession | None = None
@@ -75,6 +74,29 @@ def _download_if_needed(url: str, path: str):
         raise
 
 
+def _detect_rerank_model_url() -> str:
+    import platform
+
+    arch = platform.machine().lower()
+    if arch in ("aarch64", "arm64"):
+        logger.info("Detected ARM64 — using qint8_arm64 reranker")
+        return f"{_RERANK_HF}/model_qint8_arm64.onnx"
+    # /proc/cpuinfo exists on Linux; absent on macOS (falls through to fp32)
+    try:
+        with open("/proc/cpuinfo") as f:
+            flags = f.read()
+        if "avx512" in flags:
+            logger.info("Detected AVX-512 — using qint8_avx512 reranker")
+            return f"{_RERANK_HF}/model_qint8_avx512.onnx"
+        if "avx2" in flags:
+            logger.info("Detected AVX2 — using quint8_avx2 reranker")
+            return f"{_RERANK_HF}/model_quint8_avx2.onnx"
+    except OSError:
+        pass
+    logger.info("No SIMD detected — using optimized fp32 reranker (O2)")
+    return f"{_RERANK_HF}/model_O2.onnx"
+
+
 def load_model():
     global _openai, _rerank_session, _rerank_tokenizer
 
@@ -83,15 +105,32 @@ def load_model():
         logger.info("OpenAI client initialized (%s, %d dims)", _EMBEDDING_MODEL, EMBEDDING_DIM)
 
     if _rerank_session is None:
+        model_url = _detect_rerank_model_url()
         model_path = os.path.join(_RERANK_DIR, "model.onnx")
         tokenizer_path = os.path.join(_RERANK_DIR, "tokenizer.json")
-        _download_if_needed(_RERANK_MODEL_URL, model_path)
+        marker_path = os.path.join(_RERANK_DIR, ".model_url")
+        # Re-download if model variant changed
+        if os.path.exists(model_path):
+            existing_url = ""
+            if os.path.exists(marker_path):
+                with open(marker_path) as f:
+                    existing_url = f.read().strip()
+            if existing_url != model_url:
+                logger.info("Reranker model variant changed, re-downloading")
+                os.remove(model_path)
+        _download_if_needed(model_url, model_path)
+        with open(marker_path, "w") as f:
+            f.write(model_url)
         _download_if_needed(_RERANK_TOKENIZER_URL, tokenizer_path)
-        _rerank_session = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
+        sess_opts = ort.SessionOptions()
+        sess_opts.inter_op_num_threads = 1
+        sess_opts.intra_op_num_threads = 2
+        sess_opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        _rerank_session = ort.InferenceSession(model_path, sess_options=sess_opts, providers=["CPUExecutionProvider"])
         _rerank_tokenizer = Tokenizer.from_file(tokenizer_path)
-        _rerank_tokenizer.enable_padding(length=256)
-        _rerank_tokenizer.enable_truncation(max_length=256)
-        logger.info("Reranker loaded (ms-marco-MiniLM-L-6-v2)")
+        _rerank_tokenizer.enable_padding(length=_RERANK_MAX_LENGTH)
+        _rerank_tokenizer.enable_truncation(max_length=_RERANK_MAX_LENGTH)
+        logger.info("Reranker loaded (ms-marco-MiniLM-L-6-v2, max_length=%d)", _RERANK_MAX_LENGTH)
 
 
 def _pack(vec: list[float]) -> bytes:
@@ -124,9 +163,10 @@ def _rerank_sync(query: str, documents: list[str]) -> list[float]:
         return []
     encodings = [_rerank_tokenizer.encode(query, doc) for doc in documents]
     n = len(encodings)
-    input_ids = np.array([e.ids for e in encodings], dtype=np.int64).reshape(n, 256)
-    attention_mask = np.array([e.attention_mask for e in encodings], dtype=np.int64).reshape(n, 256)
-    token_type_ids = np.array([e.type_ids for e in encodings], dtype=np.int64).reshape(n, 256)
+    ml = _RERANK_MAX_LENGTH
+    input_ids = np.array([e.ids for e in encodings], dtype=np.int64).reshape(n, ml)
+    attention_mask = np.array([e.attention_mask for e in encodings], dtype=np.int64).reshape(n, ml)
+    token_type_ids = np.array([e.type_ids for e in encodings], dtype=np.int64).reshape(n, ml)
     outputs = _rerank_session.run(
         None,
         {"input_ids": input_ids, "attention_mask": attention_mask, "token_type_ids": token_type_ids},
