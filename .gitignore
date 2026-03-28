@@ -5,3 +5,6 @@ data/
 *.db
 .venv/
 .ruff_cache/
+
+# Claude Code
+.claude/

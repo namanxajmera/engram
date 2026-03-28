@@ -1,9 +1,12 @@
 import asyncio
+import collections
+import hashlib
 import logging
 import os
 import shutil
 import struct
 import tempfile
+import time
 import urllib.request
 
 import numpy as np
@@ -19,12 +22,42 @@ _QUESTION_MODEL = os.environ.get("ENGRAM_QUESTION_MODEL", "gpt-5.4-nano")
 _DATA_DIR = "/data" if os.path.isdir("/data") else "./data"
 
 _RERANK_DIR = os.path.join(_DATA_DIR, "model", "ms-marco-MiniLM-L-6-v2")
-_RERANK_MODEL_URL = "https://huggingface.co/cross-encoder/ms-marco-MiniLM-L-6-v2/resolve/main/onnx/model_quint8_avx2.onnx"
+_RERANK_MODEL_URL = (
+    "https://huggingface.co/cross-encoder/ms-marco-MiniLM-L-6-v2/resolve/main/onnx/model_quint8_avx2.onnx"
+)
 _RERANK_TOKENIZER_URL = "https://huggingface.co/cross-encoder/ms-marco-MiniLM-L-6-v2/resolve/main/tokenizer.json"
 
 _openai: AsyncOpenAI | None = None
 _rerank_session: ort.InferenceSession | None = None
 _rerank_tokenizer: Tokenizer | None = None
+
+_CACHE_MAX_SIZE = 1000
+_CACHE_TTL = 7 * 24 * 3600  # 7 days
+_embedding_cache: collections.OrderedDict[str, tuple[bytes, float]] = collections.OrderedDict()
+
+
+def _cache_key(text: str) -> str:
+    return hashlib.sha256(f"{text.strip().lower()}|{_EMBEDDING_MODEL}".encode()).hexdigest()
+
+
+def _cache_get(key: str) -> bytes | None:
+    entry = _embedding_cache.get(key)
+    if entry is None:
+        return None
+    value, ts = entry
+    if time.monotonic() - ts > _CACHE_TTL:
+        del _embedding_cache[key]
+        return None
+    _embedding_cache.move_to_end(key)
+    return value
+
+
+def _cache_put(key: str, value: bytes):
+    if key in _embedding_cache:
+        _embedding_cache.move_to_end(key)
+    elif len(_embedding_cache) >= _CACHE_MAX_SIZE:
+        _embedding_cache.popitem(last=False)
+    _embedding_cache[key] = (value, time.monotonic())
 
 
 def _download_if_needed(url: str, path: str):
@@ -67,8 +100,14 @@ def _pack(vec: list[float]) -> bytes:
 
 async def get_embedding(text: str) -> bytes:
     assert _openai, "Call load_model() first"
+    key = _cache_key(text)
+    cached = _cache_get(key)
+    if cached is not None:
+        return cached
     response = await _openai.embeddings.create(input=text, model=_EMBEDDING_MODEL)
-    return _pack(response.data[0].embedding)
+    packed = _pack(response.data[0].embedding)
+    _cache_put(key, packed)
+    return packed
 
 
 async def get_embeddings_batch(texts: list[str]) -> list[bytes]:
@@ -104,7 +143,10 @@ async def generate_questions(content: str, memory_type: str = "general") -> list
     response = await _openai.chat.completions.create(
         model=_QUESTION_MODEL,
         messages=[
-            {"role": "system", "content": "Generate 3-5 short questions that this fact could answer. Return only the questions, one per line. No numbering or bullets."},
+            {
+                "role": "system",
+                "content": "Generate 3-5 short questions that this fact could answer. Return only the questions, one per line. No numbering or bullets.",
+            },
             {"role": "user", "content": f"[{memory_type}] {content}"},
         ],
         max_completion_tokens=200,

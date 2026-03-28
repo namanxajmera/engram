@@ -14,6 +14,8 @@ from src.storage import (
     MAX_CONTENT_LENGTH,
     MAX_SOURCE_LENGTH,
     VALID_MEMORY_TYPES,
+    clear_questions,
+    store_questions,
     add_memory,
     check_duplicate,
     close_db,
@@ -98,16 +100,51 @@ mcp = FastMCP(
     transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
 )
 
+_background_tasks: set[asyncio.Task] = set()
+_pending_indexes: set[int] = set()
+_BG_MAX_RETRIES = 3
+_BG_RETRY_DELAY = 5
 
-async def _embed_content(content: str, memory_type: str) -> tuple[bytes, list[tuple[str, bytes]]]:
-    async def build_questions():
-        texts = await generate_questions(content, memory_type)
-        if not texts:
-            return []
-        embeddings = await get_embeddings_batch(texts)
-        return list(zip(texts, embeddings, strict=True))
 
-    return await asyncio.gather(get_embedding(content), build_questions())
+def _track_task(task: asyncio.Task):
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+
+async def _index_questions_bg(memory_id: int, content: str, memory_type: str):
+    if memory_id in _pending_indexes:
+        return
+    _pending_indexes.add(memory_id)
+    try:
+        await _index_questions_bg_inner(memory_id, content, memory_type)
+    finally:
+        _pending_indexes.discard(memory_id)
+
+
+async def _index_questions_bg_inner(memory_id: int, content: str, memory_type: str):
+    for attempt in range(1, _BG_MAX_RETRIES + 1):
+        try:
+            texts = await generate_questions(content, memory_type)
+            if not texts:
+                return
+            embeddings = await get_embeddings_batch(texts)
+            questions = list(zip(texts, embeddings, strict=True))
+            db = await get_db()
+            await clear_questions(db, memory_id)
+            await store_questions(db, memory_id, questions)
+            await db.commit()
+            logger.info("Background questions indexed for memory %d (%d questions)", memory_id, len(questions))
+            return
+        except Exception as e:
+            if attempt == _BG_MAX_RETRIES:
+                logger.error(
+                    "Question indexing failed for memory %d after %d attempts: %s", memory_id, _BG_MAX_RETRIES, e
+                )
+                return
+            logger.warning(
+                "Question indexing attempt %d/%d failed for memory %d: %s", attempt, _BG_MAX_RETRIES, memory_id, e
+            )
+            await asyncio.sleep(_BG_RETRY_DELAY)
 
 
 @mcp.resource("engram://profile")
@@ -132,9 +169,7 @@ async def recent_resource() -> str:
     memories = await list_memories(db, limit=10)
     if not memories:
         return "No memories yet."
-    return "\n".join(
-        f"[{m['memory_type']}] ({', '.join(m['tags']) or 'untagged'}) {m['content']}" for m in memories
-    )
+    return "\n".join(f"[{m['memory_type']}] ({', '.join(m['tags']) or 'untagged'}) {m['content']}" for m in memories)
 
 
 @mcp.resource("engram://projects")
@@ -150,7 +185,10 @@ async def projects_resource() -> str:
 
 @mcp.tool()
 async def add_memory_tool(
-    content: str, source: str, memory_type: str, valid_at: str,
+    content: str,
+    source: str,
+    memory_type: str,
+    valid_at: str,
     tags: list[str] = [],
 ) -> str:
     """Store a single fact as a memory. Use PROACTIVELY when the user shares info worth remembering across sessions.
@@ -173,8 +211,11 @@ async def add_memory_tool(
     existing_id = await check_duplicate(db, content)
     if existing_id is not None:
         return json.dumps({"id": existing_id, "status": "duplicate"})
-    embedding, questions = await _embed_content(content, memory_type)
-    return json.dumps(await add_memory(db, content, embedding, tags, memory_type, source, valid_at, questions))
+    embedding = await get_embedding(content)
+    result = await add_memory(db, content, embedding, tags, memory_type, source, valid_at)
+    if result.get("status") == "created" and result.get("id"):
+        _track_task(asyncio.create_task(_index_questions_bg(result["id"], content, memory_type)))
+    return json.dumps(result)
 
 
 @mcp.tool()
@@ -201,7 +242,10 @@ async def get_memory_tool(memory_id: int) -> str:
 
 @mcp.tool()
 async def list_memories_tool(
-    memory_type: str | None = None, tag: str | None = None, offset: int = 0, limit: int = 20,
+    memory_type: str | None = None,
+    tag: str | None = None,
+    offset: int = 0,
+    limit: int = 20,
 ) -> str:
     """Browse memories with optional filters. Use when listing/browsing rather than searching by meaning.
 
@@ -214,8 +258,12 @@ async def list_memories_tool(
 
 @mcp.tool()
 async def update_memory_tool(
-    memory_id: int, source: str, content: str | None = None, tags: list[str] | None = None,
-    memory_type: str | None = None, valid_at: str | None = None,
+    memory_id: int,
+    source: str,
+    content: str | None = None,
+    tags: list[str] | None = None,
+    memory_type: str | None = None,
+    valid_at: str | None = None,
 ) -> str:
     """Update an existing memory. Use when a fact has changed — ALWAYS search first to find the memory ID.
     The old version is automatically saved in history with source attribution.
@@ -236,8 +284,10 @@ async def update_memory_tool(
     if content is not None and len(content) > MAX_CONTENT_LENGTH:
         return json.dumps({"error": f"content exceeds {MAX_CONTENT_LENGTH} characters"})
     db = await get_db()
-    new_embedding, questions = (await _embed_content(content, memory_type or "general")) if content else (None, None)
-    result = await update_memory(db, memory_id, content, tags, memory_type, new_embedding, valid_at, source, questions)
+    new_embedding = (await get_embedding(content)) if content else None
+    result = await update_memory(db, memory_id, content, tags, memory_type, new_embedding, valid_at, source)
+    if result and content:
+        _track_task(asyncio.create_task(_index_questions_bg(memory_id, content, memory_type or "general")))
     return json.dumps(result or {"error": "not found"})
 
 
@@ -265,6 +315,13 @@ async def lifespan(app: FastAPI):
     logger.info("Memory service started")
     async with mcp.session_manager.run():
         yield
+    if _background_tasks:
+        logger.info("Waiting for %d background tasks to complete...", len(_background_tasks))
+        try:
+            async with asyncio.timeout(30):
+                await asyncio.gather(*_background_tasks, return_exceptions=True)
+        except TimeoutError:
+            logger.warning("Background tasks timed out after 30s, proceeding with shutdown")
     await close_db()
     logger.info("Memory service stopped")
 

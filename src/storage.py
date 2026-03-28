@@ -123,11 +123,14 @@ def _now() -> str:
 
 
 def _escape_fts(text: str) -> str:
-    return " ".join(f'"{t.replace('"', '""')}"' for t in text.split() if t)
+    return " ".join('"' + t.replace('"', '""') + '"' for t in text.split() if t)
 
 
 def _row_to_dict(row) -> dict:
-    d = {k: row[k] for k in ("id", "content", "memory_type", "source", "valid_at", "invalid_at", "created_at", "updated_at")}
+    d = {
+        k: row[k]
+        for k in ("id", "content", "memory_type", "source", "valid_at", "invalid_at", "created_at", "updated_at")
+    }
     d["tags"] = json.loads(row["tags"])
     meta = json.loads(row["metadata"])
     if meta and meta.get("history"):
@@ -135,10 +138,20 @@ def _row_to_dict(row) -> dict:
     return d
 
 
-async def _store_questions(db: aiosqlite.Connection, memory_id: int, questions: list[tuple[str, bytes]]):
+async def clear_questions(db: aiosqlite.Connection, memory_id: int):
+    await db.execute(
+        "DELETE FROM memory_question_embeddings WHERE rowid IN (SELECT id FROM memory_questions WHERE memory_id = ?)",
+        (memory_id,),
+    )
+    await db.execute("DELETE FROM memory_questions WHERE memory_id = ?", (memory_id,))
+
+
+async def store_questions(db: aiosqlite.Connection, memory_id: int, questions: list[tuple[str, bytes]]):
     for text, emb in questions:
         cur = await db.execute("INSERT INTO memory_questions (memory_id, question) VALUES (?, ?)", (memory_id, text))
-        await db.execute("INSERT INTO memory_question_embeddings (rowid, embedding) VALUES (?, ?)", (cur.lastrowid, emb))
+        await db.execute(
+            "INSERT INTO memory_question_embeddings (rowid, embedding) VALUES (?, ?)", (cur.lastrowid, emb)
+        )
 
 
 async def check_duplicate(db: aiosqlite.Connection, content: str) -> int | None:
@@ -149,9 +162,13 @@ async def check_duplicate(db: aiosqlite.Connection, content: str) -> int | None:
 
 
 async def add_memory(
-    db: aiosqlite.Connection, content: str, embedding: bytes,
-    tags: list[str] | None = None, memory_type: str = "general",
-    source: str | None = None, valid_at: str | None = None,
+    db: aiosqlite.Connection,
+    content: str,
+    embedding: bytes,
+    tags: list[str] | None = None,
+    memory_type: str = "general",
+    source: str | None = None,
+    valid_at: str | None = None,
     questions: list[tuple[str, bytes]] | None = None,
 ) -> dict:
     now = _now()
@@ -165,7 +182,7 @@ async def add_memory(
         mid = cursor.lastrowid
         await db.execute("INSERT INTO memory_embeddings (memory_id, embedding) VALUES (?, ?)", (mid, embedding))
         if questions:
-            await _store_questions(db, mid, questions)
+            await store_questions(db, mid, questions)
         await db.commit()
         return {"id": mid, "content_hash": ch, "status": "created"}
     except aiosqlite.IntegrityError:
@@ -181,8 +198,11 @@ def _rrf_score(ranks: dict[int, list[int]], k: int = 60) -> list[tuple[int, floa
 
 
 async def search_memories(
-    db: aiosqlite.Connection, query_embedding: bytes, query_text: str,
-    tag_filter: str | None = None, limit: int = 5,
+    db: aiosqlite.Connection,
+    query_embedding: bytes,
+    query_text: str,
+    tag_filter: str | None = None,
+    limit: int = 5,
     rerank_fn: Callable[[str, list[str]], Awaitable[list[float]]] | None = None,
 ) -> list[dict]:
     limit = min(limit, MAX_LIMIT)
@@ -200,14 +220,21 @@ async def search_memories(
     if hyde_raw:
         q_ids = [r[0] for r in hyde_raw]
         ph = ",".join("?" * len(q_ids))
-        q_map = {r[0]: r[1] for r in await db.execute_fetchall(f"SELECT id, memory_id FROM memory_questions WHERE id IN ({ph})", q_ids)}
+        q_map = {
+            r[0]: r[1]
+            for r in await db.execute_fetchall(f"SELECT id, memory_id FROM memory_questions WHERE id IN ({ph})", q_ids)
+        }
         hyde_results = [(q_map[r[0]], r[1]) for r in hyde_raw if r[0] in q_map]
 
     escaped = _escape_fts(query_text)
-    bm25_results = await db.execute_fetchall(
-        "SELECT rowid, rank FROM memory_fts WHERE memory_fts MATCH ? ORDER BY rank LIMIT ?",
-        (escaped, fetch_limit),
-    ) if escaped else []
+    bm25_results = (
+        await db.execute_fetchall(
+            "SELECT rowid, rank FROM memory_fts WHERE memory_fts MATCH ? ORDER BY rank LIMIT ?",
+            (escaped, fetch_limit),
+        )
+        if escaped
+        else []
+    )
 
     ranks: dict[int, list[int]] = {}
     for i, (mid, _) in enumerate(vec_results):
@@ -244,9 +271,7 @@ async def search_memories(
 
 
 async def get_memory(db: aiosqlite.Connection, memory_id: int) -> dict | None:
-    rows = await db.execute_fetchall(
-        f"SELECT {_COLS} FROM memories WHERE id = ? AND deleted_at IS NULL", (memory_id,)
-    )
+    rows = await db.execute_fetchall(f"SELECT {_COLS} FROM memories WHERE id = ? AND deleted_at IS NULL", (memory_id,))
     return _row_to_dict(rows[0]) if rows else None
 
 
@@ -264,8 +289,11 @@ async def get_profile_memories(db: aiosqlite.Connection, limit: int = 70) -> dic
 
 
 async def list_memories(
-    db: aiosqlite.Connection, memory_type: str | None = None,
-    tag: str | None = None, offset: int = 0, limit: int = 20,
+    db: aiosqlite.Connection,
+    memory_type: str | None = None,
+    tag: str | None = None,
+    offset: int = 0,
+    limit: int = 20,
 ) -> list[dict]:
     limit = min(limit, MAX_LIMIT)
     query = f"SELECT {_COLS} FROM memories WHERE deleted_at IS NULL"
@@ -282,10 +310,14 @@ async def list_memories(
 
 
 async def update_memory(
-    db: aiosqlite.Connection, memory_id: int,
-    content: str | None = None, tags: list[str] | None = None,
-    memory_type: str | None = None, new_embedding: bytes | None = None,
-    valid_at: str | None = None, source: str | None = None,
+    db: aiosqlite.Connection,
+    memory_id: int,
+    content: str | None = None,
+    tags: list[str] | None = None,
+    memory_type: str | None = None,
+    new_embedding: bytes | None = None,
+    valid_at: str | None = None,
+    source: str | None = None,
     questions: list[tuple[str, bytes]] | None = None,
 ) -> dict | None:
     now = _now()
@@ -297,11 +329,15 @@ async def update_memory(
 
     if content is not None:
         history = existing.get("history", [])[-_MAX_HISTORY:]
-        history.append({
-            "content": existing["content"], "source": existing.get("source"),
-            "valid_at": existing.get("valid_at"),
-            "invalid_at": now, "updated_at": existing["updated_at"],
-        })
+        history.append(
+            {
+                "content": existing["content"],
+                "source": existing.get("source"),
+                "valid_at": existing.get("valid_at"),
+                "invalid_at": now,
+                "updated_at": existing["updated_at"],
+            }
+        )
         updates.extend(["content = ?", "content_hash = ?", "metadata = ?"])
         params.extend([content, _hash(content), json.dumps({"history": history})])
     if valid_at is not None:
@@ -324,14 +360,12 @@ async def update_memory(
         await db.execute(f"UPDATE memories SET {', '.join(updates)} WHERE id = ?", params)
     if new_embedding is not None:
         await db.execute("DELETE FROM memory_embeddings WHERE memory_id = ?", (memory_id,))
-        await db.execute("INSERT INTO memory_embeddings (memory_id, embedding) VALUES (?, ?)", (memory_id, new_embedding))
-    if questions is not None:
         await db.execute(
-            "DELETE FROM memory_question_embeddings WHERE rowid IN (SELECT id FROM memory_questions WHERE memory_id = ?)",
-            (memory_id,),
+            "INSERT INTO memory_embeddings (memory_id, embedding) VALUES (?, ?)", (memory_id, new_embedding)
         )
-        await db.execute("DELETE FROM memory_questions WHERE memory_id = ?", (memory_id,))
-        await _store_questions(db, memory_id, questions)
+    if questions is not None:
+        await clear_questions(db, memory_id)
+        await store_questions(db, memory_id, questions)
 
     await db.commit()
     return await get_memory(db, memory_id)
