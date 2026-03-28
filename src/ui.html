@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>engram</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  :root {
+    --bg: #0a0a0a;
+    --surface: #141414;
+    --border: #222;
+    --text: #e0e0e0;
+    --dim: #666;
+    --pad: 24px;
+  }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    min-height: 100dvh;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  /* Login */
+  .login {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100vh;
+    height: 100dvh;
+    flex-direction: column;
+    gap: 16px;
+    padding: 0 24px;
+  }
+  .login h1 { font-size: 20px; font-weight: 500; letter-spacing: -0.5px; }
+  .login input {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 12px 16px;
+    border-radius: 8px;
+    width: 100%;
+    max-width: 320px;
+    font-size: 16px;
+    outline: none;
+  }
+  .login input:focus { border-color: #333; }
+  .login button {
+    background: #fff;
+    color: #000;
+    border: none;
+    padding: 12px 24px;
+    border-radius: 8px;
+    font-size: 14px;
+    cursor: pointer;
+    font-weight: 500;
+    width: 100%;
+    max-width: 320px;
+  }
+  .login .error { color: #ef4444; font-size: 13px; }
+
+  /* Header */
+  header {
+    padding: 16px var(--pad);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    background: var(--bg);
+    z-index: 10;
+  }
+  header h1 { font-size: 16px; font-weight: 500; letter-spacing: -0.5px; }
+  .stats { font-size: 13px; color: var(--dim); }
+
+  /* Search */
+  .search-bar {
+    padding: 12px var(--pad);
+  }
+  .search-bar input {
+    width: 100%;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 10px 14px;
+    border-radius: 8px;
+    font-size: 16px;
+    outline: none;
+  }
+  .search-bar input:focus { border-color: #333; }
+  .search-bar input::placeholder { color: var(--dim); }
+
+  /* Type tabs — horizontal scroll on mobile */
+  .type-tabs {
+    padding: 10px var(--pad);
+    display: flex;
+    gap: 8px;
+    border-bottom: 1px solid var(--border);
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  .type-tabs::-webkit-scrollbar { display: none; }
+  .type-tab {
+    font-size: 12px;
+    padding: 6px 14px;
+    border-radius: 6px;
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--dim);
+    cursor: pointer;
+    transition: all 0.15s;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .type-tab:hover { color: var(--text); border-color: #333; }
+  .type-tab.active { border-color: var(--color); color: var(--color); }
+  .type-tab .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--color);
+  }
+
+  /* Tags — horizontal scroll on mobile */
+  .tags-bar {
+    padding: 10px var(--pad);
+    display: flex;
+    gap: 6px;
+    border-bottom: 1px solid var(--border);
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  .tags-bar::-webkit-scrollbar { display: none; }
+  .tag {
+    font-size: 11px;
+    padding: 4px 10px;
+    border-radius: 12px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--dim);
+    cursor: pointer;
+    transition: all 0.15s;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+  .tag:hover { color: var(--text); border-color: #333; }
+  .tag.active { background: #fff; color: #000; border-color: #fff; }
+  .tag .count { margin-left: 4px; opacity: 0.5; }
+
+  /* Grid */
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 1px;
+    background: var(--border);
+  }
+
+  /* Card */
+  .card {
+    background: var(--bg);
+    padding: 14px var(--pad);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    transition: background 0.15s;
+  }
+  .card:hover { background: var(--surface); }
+  .card-type {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    font-weight: 600;
+  }
+  .card-content {
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--text);
+  }
+  .card-meta {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+  .card-tag {
+    font-size: 10px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    background: var(--surface);
+    color: var(--dim);
+    cursor: pointer;
+  }
+  .card-tag:hover { color: var(--text); }
+  .card-date {
+    font-size: 10px;
+    color: var(--dim);
+    margin-left: auto;
+  }
+  .card-source {
+    font-size: 10px;
+    color: var(--dim);
+    opacity: 0.5;
+  }
+
+  .empty {
+    padding: 80px 24px;
+    text-align: center;
+    color: var(--dim);
+    font-size: 14px;
+    grid-column: 1 / -1;
+    background: var(--bg);
+  }
+
+  /* Mobile */
+  @media (max-width: 480px) {
+    :root { --pad: 16px; }
+    .grid { grid-template-columns: 1fr; }
+    header h1 { font-size: 15px; }
+    .stats { font-size: 12px; }
+  }
+</style>
+</head>
+<body>
+
+<div id="login" class="login">
+  <h1>engram</h1>
+  <input type="password" id="apikey" placeholder="API key" />
+  <button onclick="connect()">Connect</button>
+  <div id="login-error" class="error"></div>
+</div>
+
+<div id="app" style="display:none">
+  <header>
+    <h1>engram</h1>
+    <span class="stats" id="stats"></span>
+  </header>
+
+  <div class="search-bar">
+    <input type="text" id="search" placeholder="Filter memories..." oninput="debouncedRender()" />
+  </div>
+
+  <div class="type-tabs" id="type-tabs"></div>
+  <div class="tags-bar" id="tags-bar"></div>
+  <div class="grid" id="grid"></div>
+</div>
+
+<script>
+const TYPE_COLORS = {
+  user: '#4a9eff',
+  project: '#a855f7',
+  feedback: '#f59e0b',
+  reference: '#10b981',
+  general: '#6b7280',
+};
+
+let memories = [];
+let activeType = null;
+let activeTag = null;
+let host = window.location.origin;
+let key = '';
+
+const saved = localStorage.getItem('engram_key');
+if (saved) {
+  key = saved;
+  load();
+}
+
+async function connect() {
+  host = window.location.origin;
+  key = document.getElementById('apikey').value;
+  const err = document.getElementById('login-error');
+
+  if (!key) { err.textContent = 'API key required'; return; }
+
+  try {
+    const res = await fetch(`${host}/api/memories`, {
+      headers: { Authorization: `Bearer ${key}` },
+    });
+    if (!res.ok) throw new Error(res.status === 401 ? 'Invalid API key' : `Error ${res.status}`);
+    localStorage.setItem('engram_key', key);
+    await load();
+  } catch (e) {
+    err.textContent = e.message;
+  }
+}
+
+function showView(view) {
+  document.getElementById('login').style.display = view === 'login' ? '' : 'none';
+  document.getElementById('app').style.display = view === 'app' ? '' : 'none';
+}
+
+async function load() {
+  try {
+    const res = await fetch(`${host}/api/memories`, {
+      headers: { Authorization: `Bearer ${key}` },
+    });
+
+    if (!res.ok) {
+      localStorage.removeItem('engram_key');
+      showView('login');
+      return;
+    }
+
+    memories = await res.json();
+    showView('app');
+    render();
+  } catch (e) {
+    localStorage.removeItem('engram_key');
+    showView('login');
+  }
+}
+
+function render() {
+  const search = document.getElementById('search').value.toLowerCase();
+
+  const tagBase = memories.filter(m => {
+    if (activeType && m.memory_type !== activeType) return false;
+    if (search && !m.content.toLowerCase().includes(search) &&
+        !m.tags.some(t => t.includes(search))) return false;
+    return true;
+  });
+  const filtered = activeTag ? tagBase.filter(m => m.tags.includes(activeTag)) : tagBase;
+
+  document.getElementById('stats').textContent = `${filtered.length} / ${memories.length}`;
+
+  const types = {};
+  memories.forEach(m => types[m.memory_type] = (types[m.memory_type] || 0) + 1);
+  document.getElementById('type-tabs').innerHTML =
+    `<button class="type-tab ${!activeType ? 'active' : ''}" style="--color:#888" onclick="setType(null)">
+      <span class="dot"></span>All ${memories.length}
+    </button>` +
+    Object.entries(types)
+      .sort((a, b) => b[1] - a[1])
+      .map(([t, c]) =>
+        `<button class="type-tab ${activeType === t ? 'active' : ''}" style="--color:${TYPE_COLORS[t] || '#6b7280'}" onclick="setType('${escAttr(t)}')">
+          <span class="dot"></span>${esc(t)} ${c}
+        </button>`
+      ).join('');
+
+  const filteredTagCounts = {};
+  tagBase.forEach(m => m.tags.forEach(t => filteredTagCounts[t] = (filteredTagCounts[t] || 0) + 1));
+  const sortedTags = Object.entries(filteredTagCounts).sort((a, b) => b[1] - a[1]).slice(0, 40);
+  document.getElementById('tags-bar').innerHTML = sortedTags.map(([t, c]) =>
+    `<span class="tag ${activeTag === t ? 'active' : ''}" onclick="setTag('${escAttr(t)}')">${esc(t)}<span class="count">${c}</span></span>`
+  ).join('');
+
+  if (filtered.length === 0) {
+    document.getElementById('grid').innerHTML = '<div class="empty">No memories match</div>';
+    return;
+  }
+
+  document.getElementById('grid').innerHTML = filtered.map(m => `
+    <div class="card">
+      <div class="card-type" style="color:${TYPE_COLORS[m.memory_type] || '#6b7280'}">${esc(m.memory_type)}</div>
+      <div class="card-content">${esc(m.content)}</div>
+      <div class="card-meta">
+        ${m.tags.map(t => `<span class="card-tag" onclick="setTag('${escAttr(t)}')">${esc(t)}</span>`).join('')}
+        <span class="card-source">${esc(m.source)}</span>
+        <span class="card-date">${esc(m.valid_at || '')}</span>
+      </div>
+    </div>
+  `).join('');
+}
+
+let _debounceTimer;
+function debouncedRender() {
+  clearTimeout(_debounceTimer);
+  _debounceTimer = setTimeout(render, 150);
+}
+
+function setType(t) {
+  activeType = activeType === t ? null : t;
+  render();
+}
+
+function setTag(t) {
+  activeTag = activeTag === t ? null : t;
+  render();
+}
+
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+function escAttr(s) {
+  return s.replace(/&/g,'&amp;').replace(/'/g,'&#39;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+</script>
+</body>
+</html>

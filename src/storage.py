@@ -343,9 +343,8 @@ async def list_memories(
     memory_type: str | None = None,
     tag: str | None = None,
     offset: int = 0,
-    limit: int = 20,
+    limit: int | None = 20,
 ) -> list[dict]:
-    limit = min(limit, MAX_LIMIT)
     query = f"SELECT {_COLS} FROM memories WHERE deleted_at IS NULL"
     params: list = []
     if memory_type:
@@ -354,9 +353,20 @@ async def list_memories(
     if tag:
         query += _TAG_FILTER
         params.append(tag)
-    query += " ORDER BY updated_at DESC LIMIT ? OFFSET ?"
-    params.extend([limit, offset])
+    query += " ORDER BY updated_at DESC"
+    if limit is not None:
+        limit = min(limit, MAX_LIMIT)
+        query += " LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
     return [_row_to_dict(row) for row in await db.execute_fetchall(query, params)]
+
+
+async def get_tag_counts(db: aiosqlite.Connection) -> dict[str, int]:
+    rows = await db.execute_fetchall(
+        "SELECT j.value AS tag, COUNT(*) AS cnt FROM memories, json_each(memories.tags) AS j "
+        "WHERE deleted_at IS NULL GROUP BY j.value"
+    )
+    return {row["tag"]: row["cnt"] for row in rows}
 
 
 async def update_memory(

@@ -17,7 +17,7 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
             logger.warning("MEMORY_API_KEY not set — all non-health requests will be rejected")
 
     async def dispatch(self, request: Request, call_next):
-        if request.url.path == "/health":
+        if request.url.path in ("/health", "/ui") or request.method == "OPTIONS":
             return await call_next(request)
 
         if not self._api_key:

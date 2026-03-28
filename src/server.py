@@ -3,8 +3,11 @@ import json
 import logging
 import sys
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
@@ -23,6 +26,7 @@ from src.storage import (
     get_db,
     get_memory,
     get_profile_memories,
+    get_tag_counts,
     init_db,
     list_memories,
     search_memories,
@@ -328,11 +332,31 @@ async def lifespan(app: FastAPI):
 
 def create_app() -> FastAPI:
     app = FastAPI(lifespan=lifespan)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["GET"],
+        allow_headers=["Authorization"],
+    )
     app.add_middleware(APIKeyMiddleware)
 
     @app.get("/health")
     async def health():
         return {"status": "ok"}
+
+    @app.get("/ui")
+    async def ui():
+        return FileResponse(Path(__file__).parent / "ui.html", media_type="text/html")
+
+    @app.get("/api/memories")
+    async def api_memories(memory_type: str | None = None, tag: str | None = None):
+        db = await get_db()
+        return await list_memories(db, memory_type=memory_type, tag=tag, limit=None)
+
+    @app.get("/api/tags")
+    async def api_tags():
+        db = await get_db()
+        return await get_tag_counts(db)
 
     app.mount("/", mcp.streamable_http_app())
     return app

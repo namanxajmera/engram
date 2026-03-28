@@ -39,6 +39,8 @@ npx poke@latest mcp add https://your-engram-url/mcp \
 
 **Any MCP client:** Point at your `/mcp` endpoint with a Bearer token in the Authorization header.
 
+**Web UI:** Visit `/ui` in your browser to browse all memories visually.
+
 ## How It Works
 
 ### Writes (add/update)
@@ -106,6 +108,21 @@ Clients pull these automatically — no tool call needed.
 ### Temporal Versioning
 
 Updates push the old version to a history array with source attribution and date ranges. Nothing is lost — any tool can see what changed and when.
+
+## Web UI
+
+Engram includes a built-in memory viewer at `/ui`. Browse all your memories as cards, filter by type or tag, and search across content.
+
+```
+https://your-engram-url/ui
+```
+
+- Enter your API key to connect (stored in browser localStorage)
+- Cards are color-coded by type: user, project, feedback, reference, general
+- Click type tabs or tag pills to filter; tag counts update to reflect active filters
+- Text search across content and tags
+
+The `/ui` page itself is public (static HTML with no data). All data requests require your Bearer token.
 
 ## Deploy
 
