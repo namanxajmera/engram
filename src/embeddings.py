@@ -25,6 +25,7 @@ _RERANK_DIR = os.path.join(_DATA_DIR, "model", "ms-marco-MiniLM-L-6-v2")
 _RERANK_HF = "https://huggingface.co/cross-encoder/ms-marco-MiniLM-L-6-v2/resolve/main/onnx"
 _RERANK_TOKENIZER_URL = f"{_RERANK_HF}/tokenizer.json"
 _RERANK_MAX_LENGTH = 128
+_RERANK_BATCH_SIZE = 32  # cap candidates per ONNX pass to bound peak memory
 
 _openai: AsyncOpenAI | None = None
 _rerank_session: ort.InferenceSession | None = None
@@ -157,11 +158,7 @@ async def get_embeddings_batch(texts: list[str]) -> list[bytes]:
     return [_pack(e.embedding) for e in response.data]
 
 
-def _rerank_sync(query: str, documents: list[str]) -> list[float]:
-    assert _rerank_session and _rerank_tokenizer, "Call load_model() first"
-    if not documents:
-        return []
-    encodings = [_rerank_tokenizer.encode(query, doc) for doc in documents]
+def _rerank_batch(encodings: list) -> list[float]:
     n = len(encodings)
     ml = _RERANK_MAX_LENGTH
     input_ids = np.array([e.ids for e in encodings], dtype=np.int64).reshape(n, ml)
@@ -172,6 +169,17 @@ def _rerank_sync(query: str, documents: list[str]) -> list[float]:
         {"input_ids": input_ids, "attention_mask": attention_mask, "token_type_ids": token_type_ids},
     )
     return outputs[0][:, 0].tolist()
+
+
+def _rerank_sync(query: str, documents: list[str]) -> list[float]:
+    assert _rerank_session and _rerank_tokenizer, "Call load_model() first"
+    if not documents:
+        return []
+    encodings = [_rerank_tokenizer.encode(query, doc) for doc in documents]
+    scores: list[float] = []
+    for start in range(0, len(encodings), _RERANK_BATCH_SIZE):
+        scores.extend(_rerank_batch(encodings[start : start + _RERANK_BATCH_SIZE]))
+    return scores
 
 
 async def rerank(query: str, documents: list[str]) -> list[float]:
