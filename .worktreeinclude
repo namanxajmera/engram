@@ -1,0 +1,3 @@
+# Files to copy into worktrees (must also be gitignored)
+# Only local dev secrets — production vars come from Railway at runtime
+.env.local
