@@ -210,6 +210,15 @@
     font-size: 10px;
     color: var(--dim);
     opacity: 0.5;
+    cursor: pointer;
+  }
+  .card-source:hover { color: var(--text); opacity: 1; }
+  .card-source.active { color: var(--text); opacity: 1; text-decoration: underline; }
+  .card-id {
+    font-size: 10px;
+    color: var(--dim);
+    opacity: 0.5;
+    font-variant-numeric: tabular-nums;
   }
 
   .empty {
@@ -266,6 +275,7 @@ const TYPE_COLORS = {
 let memories = [];
 let activeType = null;
 let activeTag = null;
+let activeSource = null;
 let host = window.location.origin;
 let key = '';
 
@@ -312,6 +322,7 @@ async function load() {
     }
 
     memories = await res.json();
+    memories.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
     showView('app');
     render();
   } catch (e) {
@@ -325,6 +336,7 @@ function render() {
 
   const tagBase = memories.filter(m => {
     if (activeType && m.memory_type !== activeType) return false;
+    if (activeSource && m.source !== activeSource) return false;
     if (search && !m.content.toLowerCase().includes(search) &&
         !m.tags.some(t => t.includes(search))) return false;
     return true;
@@ -364,8 +376,9 @@ function render() {
       <div class="card-type" style="color:${TYPE_COLORS[m.memory_type] || '#6b7280'}">${esc(m.memory_type)}</div>
       <div class="card-content">${esc(m.content)}</div>
       <div class="card-meta">
+        <span class="card-id">#${esc(String(m.id))}</span>
         ${m.tags.map(t => `<span class="card-tag" onclick="setTag('${escAttr(t)}')">${esc(t)}</span>`).join('')}
-        <span class="card-source">${esc(m.source)}</span>
+        <span class="card-source ${activeSource === m.source ? 'active' : ''}" onclick="setSource('${escAttr(m.source)}')">${esc(m.source)}</span>
         <span class="card-date">${esc(m.valid_at || '')}</span>
       </div>
     </div>
@@ -385,6 +398,11 @@ function setType(t) {
 
 function setTag(t) {
   activeTag = activeTag === t ? null : t;
+  render();
+}
+
+function setSource(s) {
+  activeSource = activeSource === s ? null : s;
   render();
 }
 
