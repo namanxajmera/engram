@@ -7,7 +7,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
@@ -101,6 +101,7 @@ mcp = FastMCP(
     "Engram",
     host="0.0.0.0",
     instructions=INSTRUCTIONS,
+    stateless_http=True,
     transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
 )
 
@@ -357,6 +358,13 @@ def create_app() -> FastAPI:
     async def api_tags():
         db = await get_db()
         return await get_tag_counts(db)
+
+    @app.get("/mcp")
+    async def mcp_no_sse_stream():
+        # Stateless mode has nothing to push on a standalone GET stream; holding one open only
+        # sends a keepalive ping every 15s, which stops Railway Serverless from ever sleeping.
+        # 405 is the spec's way to say "no SSE stream here"; MCP clients treat it as normal.
+        return Response(status_code=405, headers={"Allow": "POST, DELETE"})
 
     app.mount("/", mcp.streamable_http_app())
     return app
