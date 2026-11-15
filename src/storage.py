@@ -41,8 +41,9 @@ async def _configure_connection(db: aiosqlite.Connection, readonly: bool = False
     await db.enable_load_extension(False)
     if not readonly:
         await db.execute("PRAGMA journal_mode=WAL")
-    await db.execute("PRAGMA mmap_size=268435456")  # 256MB mmap
-    await db.execute("PRAGMA cache_size=-65536")  # 64MB page cache
+    # Kept small on purpose: there are 4 connections, and every MB of resident memory is billed.
+    await db.execute("PRAGMA mmap_size=0")
+    await db.execute("PRAGMA cache_size=-8192")  # 8MB page cache per connection
     await db.execute("PRAGMA temp_store=MEMORY")
 
 
