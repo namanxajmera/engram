@@ -23,7 +23,7 @@ _DATA_DIR = "/data" if os.path.isdir("/data") else "./data"
 
 _RERANK_DIR = os.path.join(_DATA_DIR, "model", "ms-marco-MiniLM-L-6-v2")
 _RERANK_HF = "https://huggingface.co/cross-encoder/ms-marco-MiniLM-L-6-v2/resolve/main/onnx"
-_RERANK_TOKENIZER_URL = f"{_RERANK_HF}/tokenizer.json"
+_RERANK_TOKENIZER_URL = "https://huggingface.co/cross-encoder/ms-marco-MiniLM-L-6-v2/resolve/main/tokenizer.json"
 _RERANK_MAX_LENGTH = 128
 _RERANK_BATCH_SIZE = 32  # cap candidates per ONNX pass to bound peak memory
 
@@ -125,7 +125,11 @@ def load_model():
         _download_if_needed(_RERANK_TOKENIZER_URL, tokenizer_path)
         sess_opts = ort.SessionOptions()
         sess_opts.inter_op_num_threads = 1
-        sess_opts.intra_op_num_threads = 2
+        sess_opts.intra_op_num_threads = 1  # container has 1 vCPU; extra threads only add memory
+        # The CPU arena keeps its high-water mark forever. For a tiny model run a few times a
+        # day that is pure idle RAM (which Railway bills per GB-minute), so allocate on demand.
+        sess_opts.enable_cpu_mem_arena = False
+        sess_opts.enable_mem_pattern = False
         sess_opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         _rerank_session = ort.InferenceSession(model_path, sess_options=sess_opts, providers=["CPUExecutionProvider"])
         _rerank_tokenizer = Tokenizer.from_file(tokenizer_path)

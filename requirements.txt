@@ -1,6 +1,6 @@
 fastapi>=0.115.0
 uvicorn>=0.30.0
-mcp[cli]>=1.8.0
+mcp[cli]>=1.8.0,<2  # 2.x renamed FastMCP -> MCPServer; unpinned install crashes on boot
 sqlite-vec>=0.1.6
 aiosqlite>=0.20.0
 openai>=1.0.0
